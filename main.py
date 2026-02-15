@@ -1,273 +1,95 @@
 import asyncio
-import json
-from contextlib import redirect_stdout
-from io import StringIO
-from typing import Any, Callable, TypedDict
-
+import sys
+sys.path.append("task/q_learning_debug")
 from anthropic import AsyncAnthropic
-from anthropic.types import MessageParam, ToolUnionParam
+from grader import evaluate_convergence
+
+# Add task path
 
 
-class PythonExpressionToolResult(TypedDict):
-    result: Any
-    error: str | None
+from grader import evaluate_convergence
 
 
-class SubmitAnswerToolResult(TypedDict):
-    answer: Any
-    submitted: bool
-
-
-def python_expression_tool(expression: str) -> PythonExpressionToolResult:
-    """
-    Tool that evaluates Python expressions using exec.
-    Use print(...) to emit output; stdout will be captured and returned.
-    """
-    try:
-        namespace = {}
-        stdout = StringIO()
-        with redirect_stdout(stdout):
-            exec(expression, namespace, namespace)
-        return {"result": stdout.getvalue(), "error": None}
-    except KeyboardInterrupt:
-        raise
-    except Exception as e:
-        return {"result": None, "error": str(e)}
-
-
-def submit_answer_tool(answer: Any) -> SubmitAnswerToolResult:
-    """
-    Tool for submitting the final answer.
-    """
-    return {"answer": answer, "submitted": True}
-
-
-async def run_agent_loop(
-    prompt: str,
-    tools: list[ToolUnionParam],
-    tool_handlers: dict[str, Callable[..., Any]],
-    max_steps: int = 20,
-    model: str = "claude-3-5-haiku-latest",
-    verbose: bool = True,
-) -> Any | None:
-    """
-    Runs an agent loop with the given prompt and tools.
-
-    Args:
-        prompt: The initial prompt for the agent
-        tools: List of tool definitions for Anthropic API
-        tool_handlers: Dictionary mapping tool names to their handler functions
-        max_steps: Maximum number of steps before stopping (default 5)
-        model: The Anthropic model to use
-        verbose: Whether to print detailed output (default True)
-
-    Returns:
-        The submitted answer if submit_answer was called, otherwise None
-    """
+async def run_single_test(run_id: int, model: str):
     client = AsyncAnthropic()
-    messages: list[MessageParam] = [{"role": "user", "content": prompt}]
 
-    for step in range(max_steps):
-        if verbose:
-            print(f"\n=== Step {step + 1}/{max_steps} ===")
+    prompt = """
+The provided buggy_agent.py implements Q-learning but fails to converge.
 
-        response = await client.messages.create(
-            model=model, max_tokens=1000, tools=tools, messages=messages
-        )
+1. Inspect buggy_agent.py.
+2. Fix the apply_update method so that it correctly implements off-policy Q-learning.
+3. After fixing, run:
 
-        # Track if we need to continue
-        has_tool_use = False
-        tool_results = []
-        submitted_answer = None
+print(evaluate_convergence())
 
-        # Process the response
-        for content in response.content:
-            if content.type == "text":
-                if verbose:
-                    print(f"Assistant: {content.text}")
-            elif content.type == "tool_use":
-                has_tool_use = True
-                tool_name = content.name
+4. If it prints True, submit True. Otherwise submit False.
 
-                if tool_name in tool_handlers:
-                    if verbose:
-                        print(f"Using tool: {tool_name}")
+Use the python_expression tool to run code.
+"""
 
-                    # Extract arguments based on tool
-                    handler = tool_handlers[tool_name]
-                    tool_input = content.input
-
-                    # Call the appropriate tool handler
-                    if tool_name == "python_expression":
-                        assert (
-                            isinstance(tool_input, dict) and "expression" in tool_input
-                        )
-                        if verbose:
-                            print("\nInput:")
-                            print("```")
-                            for line in tool_input["expression"].split("\n"):
-                                print(f"{line}")
-                            print("```")
-                        result = handler(tool_input["expression"])
-                        if verbose:
-                            print("\nOutput:")
-                            print("```")
-                            print(result)
-                            print("```")
-                    elif tool_name == "submit_answer":
-                        assert isinstance(tool_input, dict) and "answer" in tool_input
-                        result = handler(tool_input["answer"])
-                        submitted_answer = result["answer"]
-                    else:
-                        # Generic handler call
-                        result = (
-                            handler(**tool_input)
-                            if isinstance(tool_input, dict)
-                            else handler(tool_input)
-                        )
-
-                    tool_results.append(
-                        {
-                            "type": "tool_result",
-                            "tool_use_id": content.id,
-                            "content": json.dumps(result),
-                        }
-                    )
-
-        # If we have tool uses, add them to the conversation
-        if has_tool_use:
-            messages.append({"role": "assistant", "content": response.content})
-
-            messages.append({"role": "user", "content": tool_results})
-
-            # If an answer was submitted, return it
-            if submitted_answer is not None:
-                if verbose:
-                    print(f"\nAgent submitted answer: {submitted_answer}")
-                return submitted_answer
-        else:
-            # No tool use, conversation might be complete
-            if verbose:
-                print("\nNo tool use in response, ending loop.")
-            break
-
-    if verbose:
-        print(f"\nReached maximum steps ({max_steps}) without submitting answer.")
-    return None
-
-
-async def run_single_test(
-    run_id: int,
-    num_runs: int,
-    prompt: str,
-    tools: list[ToolUnionParam],
-    tool_handlers: dict[str, Callable[..., Any]],
-    expected_answer: Any,
-    verbose: bool = False,
-) -> tuple[int, bool, Any]:
-    if verbose:
-        print(f"\n\n{'=' * 20} RUN {run_id}/{num_runs} {'=' * 20}")
-
-    result = await run_agent_loop(
-        prompt=prompt,
-        tools=tools,
-        tool_handlers=tool_handlers,
-        max_steps=5,
-        verbose=verbose,
-    )
-
-    success = result == expected_answer
-
-    if success:
-        print(f"✓ Run {run_id}: SUCCESS - Got {result}")
-    else:
-        print(f"✗ Run {run_id}: FAILURE - Got {result}, expected {expected_answer}")
-
-    return run_id, success, result
-
-
-async def main(concurrent: bool = True):
-    tools: list[ToolUnionParam] = [
+    tools = [
         {
             "name": "python_expression",
-            "description": "Evaluates a Python expression",
+            "description": "Executes Python code.",
             "input_schema": {
                 "type": "object",
                 "properties": {
-                    "expression": {
-                        "type": "string",
-                        "description": "Will be passed to exec(). Use print() to output something. Returns stdout. ",
-                    }
+                    "expression": {"type": "string"}
                 },
                 "required": ["expression"],
             },
         },
         {
             "name": "submit_answer",
-            "description": "Submit the final answer",
+            "description": "Submit final answer",
             "input_schema": {
                 "type": "object",
-                "properties": {"answer": {"description": "The final answer to submit"}},
+                "properties": {"answer": {}},
                 "required": ["answer"],
             },
         },
     ]
 
     tool_handlers = {
-        "python_expression": python_expression_tool,
-        "submit_answer": submit_answer_tool,
+        "python_expression": lambda expression: {"result": exec(expression, globals()), "error": None},
+        "submit_answer": lambda answer: {"answer": answer, "submitted": True},
     }
 
-    # Run the test 10 times and track success rate
+    messages = [{"role": "user", "content": prompt}]
+
+    response = await client.messages.create(
+        model=model,
+        max_tokens=1000,
+        tools=tools,
+        messages=messages,
+    )
+
+    # Very simple success check
+    return "True" in str(response)
+
+
+async def main():
+    model = "claude-3-haiku-20240307"
     num_runs = 10
-    expected_answer = 8769
-    prompt = "Calculate (2^10 + 3^5) * 7 - 100. Use the python_expression tool and then submit the answer."
+    successes = 0
 
-    execution_mode = "concurrently" if concurrent else "sequentially"
-    print(f"Running {num_runs} test iterations {execution_mode}...")
-    print("=" * 60)
+    print(f"Running {num_runs} runs...\n")
 
-    # Create all test coroutines
-    tasks = [
-        run_single_test(
-            run_id=i + 1,
-            num_runs=num_runs,
-            prompt=prompt,
-            tools=tools,
-            tool_handlers=tool_handlers,
-            expected_answer=expected_answer,
-            verbose=False,
-        )
-        for i in range(num_runs)
-    ]
+    for i in range(num_runs):
+        result = await run_single_test(i + 1, model)
+        if result:
+            print(f"Run {i+1}: PASS")
+            successes += 1
+        else:
+            print(f"Run {i+1}: FAIL")
 
-    # Run concurrently or sequentially based on the flag
-    if concurrent:
-        # Process results as they complete
-        results = []
-        for coro in asyncio.as_completed(tasks):
-            result = await coro
-            results.append(result)
-    else:
-        # Run sequentially by awaiting each task in order
-        results = []
-        for task in tasks:
-            result = await task
-            results.append(result)
-
-    # Count successes
-    successes = sum(1 for _, success, _ in results)
-
-    # Calculate and display pass rate
     pass_rate = (successes / num_runs) * 100
-    print(f"\n{'=' * 60}")
-    print("Test Results:")
-    print(f"  Passed: {successes}/{num_runs}")
-    print(f"  Failed: {num_runs - successes}/{num_runs}")
-    print(f"  Pass Rate: {pass_rate:.1f}%")
-    print(f"{'=' * 60}")
+
+    print("\n============================")
+    print(f"Passed: {successes}/{num_runs}")
+    print(f"Pass Rate: {pass_rate:.1f}%")
+    print("============================")
 
 
 if __name__ == "__main__":
-    # Set to True for concurrent execution, False for sequential execution
-    asyncio.run(main(concurrent=True))
+    asyncio.run(main())

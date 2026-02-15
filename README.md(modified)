@@ -1,0 +1,94 @@
+hello-py
+===
+
+Setup instructions:
+
+1. Clone the repository:
+   ```
+   git clone https://github.com/preferencemodel/hello-py.git
+   ```
+
+2. Navigate to the project directory:
+   ```
+   cd hello-py
+   ```
+
+3. Set up `ANTHROPIC_API_KEY` environment variable:
+   ```
+   export ANTHROPIC_API_KEY=your_api_key_here
+   ```
+
+4. Run the agent:
+   ```
+   uv run main.py
+   ```
+
+## Execution Modes
+
+The test suite supports both concurrent and sequential execution. 
+
+To change modes, edit the `concurrent` parameter at the bottom of `main.py`:
+
+```python
+asyncio.run(main(concurrent=True))
+asyncio.run(main(concurrent=False))
+```
+
+When running concurrently, results print as they complete (not in run order) for faster overall execution.
+---
+
+# Custom RL Task: Q-Learning Off-Policy Debugging
+
+## Task Summary
+This task introduces a subtle off-policy bug in a Q-learning agent.
+The agent incorrectly uses a SARSA-style update:
+
+    future_val = self.q_values[s_prime, a]
+
+Instead of the Bellman optimality update:
+
+    future_val = np.max(self.q_values[s_prime])
+
+The objective is to identify and correct this logic error.
+
+---
+
+## Evaluation Method
+
+The grader trains the agent for 2500 episodes in a deterministic 4x4 grid world.
+
+Success criterion:
+
+    max(Q(start_state)) > 4.5
+
+If the bug is fixed correctly, convergence occurs.
+If not, value remains below threshold.
+
+---
+
+## Observed Pass Rate
+
+Model: claude-3-haiku-20240307  
+Runs: 10  
+
+Run 1: 10%  
+Run 2: 20%  
+
+Average observed pass rate: ~15–20%
+
+---
+
+## Common Failure Modes
+
+- Retaining SARSA-style update
+- Incorrect TD target
+- Failing to apply np.max
+- Modifying wrong variable
+
+---
+
+This task evaluates understanding of:
+- Bellman optimality equation
+- Off-policy vs on-policy learning
+- Reinforcement learning debugging
+
